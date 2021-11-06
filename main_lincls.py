@@ -55,7 +55,7 @@ parser.add_argument('-b', '--batch-size', default=4096, type=int,
                     help='mini-batch size (default: 4096), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.0005, type=float, # default 0.1
                     metavar='LR', help='initial (base) learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
@@ -164,7 +164,11 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.distributed.barrier()
     # create model
     print("=> creating model '{}'".format(args.arch))
-    model = vit.__dict__[args.arch](img_size=constants.IMG_SIZE[args.dataset], patch_size=args.patch_size, num_classes=2048) if args.arch.startswith('vit') else models.__dict__[args.arch]()
+    if args.arch.startswith('vit'):
+        model = vit.__dict__[args.arch](img_size=constants.IMG_SIZE[args.dataset], patch_size=args.patch_size, 
+                                        num_classes=constants.NUM_CLASSES[args.dataset])
+    else:
+        model = models.__dict__[args.arch](num_classes=constants.NUM_CLASSES[args.dataset])
 
     # freeze all layers but the last fc
     #for name, param in model.named_parameters():
@@ -192,6 +196,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
             args.start_epoch = 0
             msg = model.load_state_dict(state_dict, strict=False)
+            print(msg)
             assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}
 
             print("=> loaded pre-trained model '{}'".format(args.pretrained))
@@ -237,9 +242,10 @@ def main_worker(gpu, ngpus_per_node, args):
     parameters = model.parameters()#list(filter(lambda p: p.requires_grad, model.parameters()))
     #assert len(parameters) == 2  # fc.weight, fc.bias
 
-    optimizer = torch.optim.SGD(parameters, init_lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    #optimizer = torch.optim.SGD(parameters, init_lr,
+    #                            momentum=args.momentum,
+    #                            weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(parameters, init_lr)
     if args.lars:
         print("=> use LARS optimizer.")
         #from apex.parallel.LARC import LARC
@@ -337,7 +343,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'state_dict': model.state_dict(),
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
-            }, is_best)
+            }, is_best, filename=os.path.join(args.out_path, 'checkpoint.pth.tar'))
             if epoch == args.start_epoch:
                 sanity_check(model.state_dict(), args.pretrained)
 
@@ -462,8 +468,8 @@ def sanity_check(state_dict, pretrained_weights):
         k_pre = 'module.encoder.' + k[len('module.'):] \
             if k.startswith('module.') else 'module.encoder.' + k
 
-        assert ((state_dict[k].cpu() == state_dict_pre[k_pre]).all()), \
-            '{} is changed in linear classifier training.'.format(k)
+        #assert ((state_dict[k].cpu() == state_dict_pre[k_pre]).all()), \
+        #    '{} is changed in linear classifier training.'.format(k)
 
     print("=> sanity check passed.")
 
