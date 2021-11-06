@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#p!/usr/bin/env python
 # Copyright (c) Facebook, Inc. and its affiliates.
 # All rights reserved.
 
@@ -27,9 +27,14 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 
+from datasets import constants
+from datasets.dataloaders import get_datasets
+import vit_dino as vit
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
+model_names += ['vit_small']
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
@@ -86,12 +91,21 @@ parser.add_argument('--pretrained', default='', type=str,
                     help='path to simsiam pretrained checkpoint')
 parser.add_argument('--lars', action='store_true',
                     help='Use LARS')
+parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'flower102', 'oxford_pet', 'tiny_imagenet'], 
+                    help='Dataset used.')
+parser.add_argument('--patch_size', type=int, default=32, help='Patch size of the ViT backbone.')
+parser.add_argument('--out_path', type=str, default='./tmp', help='Output path.')
 
 best_acc1 = 0
 
 
 def main():
     args = parser.parse_args()
+    args.out_path = os.path.join(args.out_path, args.dataset)
+    if not os.path.exists(args.out_path):
+        os.makedirs(args.out_path)
+    if len(args.pretrained) == 0:
+        args.pretrained = os.path.join(args.out_path, 'checkpoint_ssl.pth.tar')
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -150,12 +164,12 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.distributed.barrier()
     # create model
     print("=> creating model '{}'".format(args.arch))
-    model = models.__dict__[args.arch]()
+    model = vit.__dict__[args.arch](img_size=constants.IMG_SIZE[args.dataset], patch_size=args.patch_size, num_classes=2048) if args.arch.startswith('vit') else models.__dict__[args.arch]()
 
     # freeze all layers but the last fc
-    for name, param in model.named_parameters():
-        if name not in ['fc.weight', 'fc.bias']:
-            param.requires_grad = False
+    #for name, param in model.named_parameters():
+    #    if name not in ['fc.weight', 'fc.bias']:
+    #        param.requires_grad = False
     # init the fc layer
     model.fc.weight.data.normal_(mean=0.0, std=0.01)
     model.fc.bias.data.zero_()
@@ -170,9 +184,9 @@ def main_worker(gpu, ngpus_per_node, args):
             state_dict = checkpoint['state_dict']
             for k in list(state_dict.keys()):
                 # retain only encoder up to before the embedding layer
-                if k.startswith('module.encoder') and not k.startswith('module.encoder.fc'):
+                if k.startswith('encoder') and not k.startswith('encoder.fc'):
                     # remove prefix
-                    state_dict[k[len("module.encoder."):]] = state_dict[k]
+                    state_dict[k[len("encoder."):]] = state_dict[k]
                 # delete renamed or unused k
                 del state_dict[k]
 
@@ -220,16 +234,17 @@ def main_worker(gpu, ngpus_per_node, args):
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
 
     # optimize only the linear classifier
-    parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
-    assert len(parameters) == 2  # fc.weight, fc.bias
+    parameters = model.parameters()#list(filter(lambda p: p.requires_grad, model.parameters()))
+    #assert len(parameters) == 2  # fc.weight, fc.bias
 
     optimizer = torch.optim.SGD(parameters, init_lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
     if args.lars:
         print("=> use LARS optimizer.")
-        from apex.parallel.LARC import LARC
-        optimizer = LARC(optimizer=optimizer, trust_coefficient=.001, clip=False)
+        #from apex.parallel.LARC import LARC
+        from torchlars import LARS
+        optimizer = LARS(optimizer=optimizer, trust_coef=.001)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -256,19 +271,23 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    #traindir = os.path.join(args.data, 'train')
+    #valdir = os.path.join(args.data, 'val')
+    normalize = transforms.Normalize(*constants.NORMALIZATION[args.dataset])
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
+    
+    #train_dataset = datasets.ImageFolder(
+    #    traindir,
+    #    transforms.Compose([
+    #        transforms.RandomResizedCrop(224),
+    #        transforms.RandomHorizontalFlip(),
+    #        transforms.ToTensor(),
+    #        normalize,
+    #    ]))
+    #transform_dict = {'train': simsiam.loader.TwoCropsTransform(transforms.Compose(augmentation)), 
+    #                  'train_aug': None, 'validation': None, 'test': None}
+    ds_dict = get_datasets(args)
+    train_dataset = ds_dict['train_aug']
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -279,15 +298,17 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])),
-        batch_size=256, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
+    #val_loader = torch.utils.data.DataLoader(
+    #    datasets.ImageFolder(valdir, transforms.Compose([
+    #        transforms.Resize(256),
+    #        transforms.CenterCrop(224),
+    #        transforms.ToTensor(),
+    #        normalize,
+    #    ])),
+    #    batch_size=256, shuffle=False,
+    #    num_workers=args.workers, pin_memory=True)
+    val_loader = torch.utils.data.DataLoader(ds_dict['validation'], batch_size=256, shuffle=False, num_workers=args.workers, 
+                                        pin_memory=True)
 
     if args.evaluate:
         validate(val_loader, model, criterion, args)
@@ -339,7 +360,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     BatchNorm in train mode may revise running mean/std (even if it receives
     no gradient), which are part of the model parameters too.
     """
-    model.eval()
+    #model.eval()
 
     end = time.time()
     for i, (images, target) in enumerate(train_loader):

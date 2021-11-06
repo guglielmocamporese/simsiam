@@ -12,7 +12,7 @@ class SimSiam(nn.Module):
     """
     Build a SimSiam model.
     """
-    def __init__(self, base_encoder, dim=2048, pred_dim=512):
+    def __init__(self, base_encoder, dim=2048, pred_dim=512, patch_size=32, img_size=224):
         """
         dim: feature dimension (default: 2048)
         pred_dim: hidden dimension of the predictor (default: 512)
@@ -21,10 +21,16 @@ class SimSiam(nn.Module):
 
         # create the encoder
         # num_classes is the output fc dimension, zero-initialize last BNs
-        self.encoder = base_encoder(num_classes=dim, zero_init_residual=True)
+        if base_encoder.__name__.startswith('vit'):
+            print('Creating SimSiam with ViT encoder.')
+            self.encoder = base_encoder(img_size=img_size, patch_size=patch_size, num_classes=dim)
+            prev_dim = self.encoder.cls_token.shape[-1]
 
-        # build a 3-layer projector
-        prev_dim = self.encoder.fc.weight.shape[1]
+        else:
+            self.encoder = base_encoder(num_classes=dim, zero_init_residual=True)
+
+            # build a 3-layer projector
+            prev_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = nn.Sequential(nn.Linear(prev_dim, prev_dim, bias=False),
                                         nn.BatchNorm1d(prev_dim),
                                         nn.ReLU(inplace=True), # first layer

@@ -29,19 +29,23 @@ import torchvision.models as models
 
 import simsiam.loader
 import simsiam.builder
+import vit_dino as vit
+from datasets.dataloaders import get_datasets
+from datasets import constants
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
+model_names += ['vit_small']
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
-                    help='path to dataset')
-parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
+                    help='path to dataset', default='./data')
+parser.add_argument('-a', '--arch', metavar='ARCH', default='vit_small',
                     choices=model_names,
                     help='model architecture: ' +
                         ' | '.join(model_names) +
-                        ' (default: resnet50)')
+                        ' (default: vit_small)')
 parser.add_argument('-j', '--workers', default=32, type=int, metavar='N',
                     help='number of data loading workers (default: 32)')
 parser.add_argument('--epochs', default=100, type=int, metavar='N',
@@ -53,7 +57,7 @@ parser.add_argument('-b', '--batch-size', default=512, type=int,
                     help='mini-batch size (default: 512), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.05, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.0005, type=float, # default=0.05 with sgd
                     metavar='LR', help='initial (base) learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum of SGD solver')
@@ -89,9 +93,16 @@ parser.add_argument('--pred-dim', default=512, type=int,
                     help='hidden dimension of the predictor (default: 512)')
 parser.add_argument('--fix-pred-lr', action='store_true',
                     help='Fix learning rate for the predictor')
+parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'flower102', 'oxford_pet', 'tiny_imagenet'], 
+                    help='Dataset used.')
+parser.add_argument('--patch_size', type=int, default=32, help='Patch size of the ViT backbone.')
+parser.add_argument('--out_path', type=str, default='./tmp', help='Output path.')
 
 def main():
     args = parser.parse_args()
+    args.out_path = os.path.join(args.out_path, args.dataset)
+    if not os.path.exists(args.out_path):
+        os.makedirs(args.out_path)
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -150,8 +161,9 @@ def main_worker(gpu, ngpus_per_node, args):
     # create model
     print("=> creating model '{}'".format(args.arch))
     model = simsiam.builder.SimSiam(
-        models.__dict__[args.arch],
-        args.dim, args.pred_dim)
+        #models.__dict__[args.arch],
+        vit.__dict__[args.arch] if args.arch.startswith('vit') else models.__dict__[args.arch],
+        dim=args.dim, pred_dim=args.pred_dim, img_size=constants.IMG_SIZE[args.dataset], patch_size=args.patch_size)
 
     # infer learning rate before changing batch size
     init_lr = args.lr * args.batch_size / 256
@@ -180,25 +192,26 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
         # comment out the following line for debugging
-        raise NotImplementedError("Only DistributedDataParallel is supported.")
+        #raise NotImplementedError("Only DistributedDataParallel is supported.")
     else:
         # AllGather implementation (batch shuffle, queue update, etc.) in
         # this code only supports DistributedDataParallel.
         raise NotImplementedError("Only DistributedDataParallel is supported.")
-    print(model) # print model after SyncBatchNorm
+    #print(model) # print model after SyncBatchNorm
 
     # define loss function (criterion) and optimizer
     criterion = nn.CosineSimilarity(dim=1).cuda(args.gpu)
 
     if args.fix_pred_lr:
-        optim_params = [{'params': model.module.encoder.parameters(), 'fix_lr': False},
-                        {'params': model.module.predictor.parameters(), 'fix_lr': True}]
+        optim_params = [{'params': model.encoder.parameters(), 'fix_lr': False},
+                        {'params': model.predictor.parameters(), 'fix_lr': True}]
     else:
         optim_params = model.parameters()
 
-    optimizer = torch.optim.SGD(optim_params, init_lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    #optimizer = torch.optim.SGD(optim_params, init_lr,
+    #                            momentum=args.momentum,
+    #                            weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(optim_params, init_lr)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -222,12 +235,20 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Data loading code
     traindir = os.path.join(args.data, 'train')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    normalize = transforms.Normalize(*constants.NORMALIZATION[args.dataset])
+    #gray2rgb_ifneeded = lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x
+    #rgba2rgb_ifneeded = lambda x: x[:3] if x.shape[0] == 4 else x
+    #gray2rgb_ifneeded_pil = lambda x: x.convert('RGB') if x.mode == 'L' else x
+    #rgba2rgb_ifneeded_pil = lambda x: x.convert('RGB') if x.mode == 'RGBA' else x
+    #identity = lambda x: x
+    to_rgb_ifneeded = lambda x: x.convert('RGB') if x.mode in ['L', 'RGBA'] else x
 
     # MoCo v2's aug: similar to SimCLR https://arxiv.org/abs/2002.05709
     augmentation = [
-        transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
+        #gray2rgb_ifneeded_pil if args.dataset in ['oxford_pet', 'tiny_imagenet'] else identity,
+        #rgba2rgb_ifneeded_pil if args.dataset in ['oxford_pet', 'tiny_imagenet'] else identity,
+        to_rgb_ifneeded,
+        transforms.RandomResizedCrop(constants.IMG_SIZE[args.dataset], scale=(0.2, 1.)),
         transforms.RandomApply([
             transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
         ], p=0.8),
@@ -238,9 +259,12 @@ def main_worker(gpu, ngpus_per_node, args):
         normalize
     ]
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        simsiam.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+    #train_dataset = datasets.ImageFolder(
+    #    traindir,
+    #    simsiam.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+    transform_dict = {'train': simsiam.loader.TwoCropsTransform(transforms.Compose(augmentation)), 
+                      'train_aug': None, 'validation': None, 'test': None}
+    train_dataset = get_datasets(args, transform=transform_dict)['train']
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -266,7 +290,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
-            }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
+            }, is_best=False, filename=os.path.join(args.out_path, 'checkpoint_ssl.pth.tar'))
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
