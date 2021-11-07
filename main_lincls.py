@@ -179,29 +179,8 @@ def main_worker(gpu, ngpus_per_node, args):
     model.fc.bias.data.zero_()
 
     # load from pre-trained, before DistributedDataParallel constructor
-    if args.pretrained:
-        if os.path.isfile(args.pretrained):
-            print("=> loading checkpoint '{}'".format(args.pretrained))
-            checkpoint = torch.load(args.pretrained, map_location="cpu")
-
-            # rename moco pre-trained keys
-            state_dict = checkpoint['state_dict']
-            for k in list(state_dict.keys()):
-                # retain only encoder up to before the embedding layer
-                if k.startswith('encoder') and not k.startswith('encoder.fc'):
-                    # remove prefix
-                    state_dict[k[len("encoder."):]] = state_dict[k]
-                # delete renamed or unused k
-                del state_dict[k]
-
-            args.start_epoch = 0
-            msg = model.load_state_dict(state_dict, strict=False)
-            print(msg)
-            assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}
-
-            print("=> loaded pre-trained model '{}'".format(args.pretrained))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.pretrained))
+    if args.pretrained and (not args.evaluate):
+        model = load_simsiam_checkpoint(args, model)
 
     # infer learning rate before changing batch size
     init_lr = args.lr * args.batch_size / 256
@@ -317,6 +296,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                         pin_memory=True)
 
     if args.evaluate:
+        model = load_encoder_checkpoint(args, model)
         validate(val_loader, model, criterion, args)
         return
 
@@ -537,6 +517,56 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+def load_simsiam_checkpoint(args, model):
+    if os.path.isfile(args.pretrained):
+        print("=> loading checkpoint '{}'".format(args.pretrained))
+        checkpoint = torch.load(args.pretrained, map_location="cpu")
+
+        # rename moco pre-trained keys
+        state_dict = checkpoint['state_dict']
+        for k in list(state_dict.keys()):
+            # retain only encoder up to before the embedding layer
+            if k.startswith('encoder') and not k.startswith('encoder.fc'):
+                # remove prefix
+                state_dict[k[len("encoder."):]] = state_dict[k]
+            # delete renamed or unused k
+            del state_dict[k]
+
+        args.start_epoch = 0
+        msg = model.load_state_dict(state_dict, strict=False)
+        print(msg)
+        assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}
+
+        print("=> loaded pre-trained model '{}'".format(args.pretrained))
+    else:
+        print("=> no checkpoint found at '{}'".format(args.pretrained))
+    return model
+
+def load_encoder_checkpoint(args, model):
+    if os.path.isfile(args.pretrained):
+        print("=> loading checkpoint '{}'".format(args.pretrained))
+        checkpoint = torch.load(args.pretrained, map_location="cpu")
+
+        # rename moco pre-trained keys
+        state_dict = checkpoint['state_dict']
+        #for k in list(state_dict.keys()):
+        #    # retain only encoder up to before the embedding layer
+        #    if k.startswith('encoder') and not k.startswith('encoder.fc'):
+        #        # remove prefix
+        #        state_dict[k[len("encoder."):]] = state_dict[k]
+        #    # delete renamed or unused k
+        #    del state_dict[k]
+
+        args.start_epoch = 0
+        msg = model.load_state_dict(state_dict, strict=False)
+        print(msg)
+        #assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}
+
+        print("=> loaded pre-trained model '{}'".format(args.pretrained))
+    else:
+        print("=> no checkpoint found at '{}'".format(args.pretrained))
+    return model
 
 
 if __name__ == '__main__':
