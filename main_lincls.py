@@ -427,7 +427,7 @@ def validate(val_loader, model, criterion, args):
 def save_checkpoint(state, is_best, out_path='./', filename='checkpoint.pth.tar'):
     torch.save(state, os.path.join(out_path, filename))
     if is_best:
-        shutil.copyfile(filename, os.path.join(out_path, 'model_best.pth.tar'))
+        shutil.copyfile(os.path.join(out_path, filename), os.path.join(out_path, 'model_best.pth.tar'))
 
 
 def sanity_check(state_dict, pretrained_weights):
