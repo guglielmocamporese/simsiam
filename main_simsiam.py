@@ -93,7 +93,7 @@ parser.add_argument('--pred-dim', default=512, type=int,
                     help='hidden dimension of the predictor (default: 512)')
 parser.add_argument('--fix-pred-lr', action='store_true',
                     help='Fix learning rate for the predictor')
-parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'flower102', 'oxford_pet', 'tiny_imagenet'], 
+parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'flower102', 'oxford_pet', 'tiny_imagenet', 'svhn'], 
                     help='Dataset used.')
 parser.add_argument('--patch_size', type=int, default=32, help='Patch size of the ViT backbone.')
 parser.add_argument('--out_path', type=str, default='./tmp', help='Output path.')

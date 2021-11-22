@@ -91,7 +91,7 @@ parser.add_argument('--pretrained', default='', type=str,
                     help='path to simsiam pretrained checkpoint')
 parser.add_argument('--lars', action='store_true',
                     help='Use LARS')
-parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'flower102', 'oxford_pet', 'tiny_imagenet'], 
+parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'flower102', 'oxford_pet', 'tiny_imagenet', 'svhn'], 
                     help='Dataset used.')
 parser.add_argument('--patch_size', type=int, default=32, help='Patch size of the ViT backbone.')
 parser.add_argument('--out_path', type=str, default='./tmp', help='Output path.')
